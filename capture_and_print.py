@@ -18,7 +18,7 @@ CAMERA_DEVICE = "/dev/video0"
 CAPTURE_WIDTH = 3264
 CAPTURE_HEIGHT = 2448
 
-# M08F: A4 at 203 dpi
+# M08F: A4 / 203 dpi
 PRINT_WIDTH = 1678
 PRINT_HEIGHT = 2373
 
@@ -27,7 +27,7 @@ PRINTER_NAME = "M08F"
 
 
 def capture_frame() -> Image.Image:
-    """USBカメラから最高解像度の画像を1枚取得する。"""
+    """USBカメラから画像を1枚取得する。"""
     cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2)
 
     if not cap.isOpened():
@@ -41,7 +41,7 @@ def capture_frame() -> Image.Image:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
 
-        # 自動露出やオートフォーカスが落ち着くのを待つ
+        # 自動露出・オートフォーカスが落ち着くのを待つ
         time.sleep(1.0)
 
         frame = None
@@ -59,7 +59,6 @@ def capture_frame() -> Image.Image:
         actual_height, actual_width = frame.shape[:2]
         print(f"Capture: {actual_width}x{actual_height}")
 
-        # OpenCVのBGRをRGBへ変換
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return Image.fromarray(rgb)
 
@@ -69,16 +68,14 @@ def capture_frame() -> Image.Image:
 
 def prepare_for_print(
     image: Image.Image,
-    rotate_clockwise: bool,
+    rotate_clockwise: bool = True,
 ) -> Image.Image:
-    """撮影画像をA4・203dpiのグレースケール画像に変換する。"""
-    if rotate_clockwise:
-        # カメラを横長の状態で使い、出力だけ縦へ回す場合
-        image = image.transpose(Image.Transpose.ROTATE_270)
-
+    """撮影画像をA4印刷用グレースケール画像へ変換する。"""
     image = ImageOps.exif_transpose(image)
 
-    # A4の縦横比に中央クロップしつつ、印刷解像度へ縮小
+    if rotate_clockwise:
+        image = image.transpose(Image.Transpose.ROTATE_270)
+
     image = ImageOps.fit(
         image,
         (PRINT_WIDTH, PRINT_HEIGHT),
@@ -86,12 +83,11 @@ def prepare_for_print(
         centering=(0.5, 0.5),
     )
 
-    # まずはドライバの階調処理を確認するため8bitグレーのまま
     return image.convert("L")
 
 
-def print_image(path: Path) -> None:
-    """CUPS経由でM08Fへ画像を送る。"""
+def send_to_printer(path: Path) -> str:
+    """CUPS経由で画像をM08Fへ送る。"""
     command = [
         "lp",
         "-d",
@@ -104,6 +100,7 @@ def print_image(path: Path) -> None:
     ]
 
     print("Print command:", " ".join(command))
+
     result = subprocess.run(
         command,
         check=True,
@@ -111,8 +108,60 @@ def print_image(path: Path) -> None:
         text=True,
     )
 
-    if result.stdout:
-        print(result.stdout.strip())
+    message = result.stdout.strip()
+
+    if message:
+        print(message)
+
+    return message
+
+
+def capture_and_print(
+    *,
+    print_enabled: bool = True,
+    rotate_clockwise: bool = True,
+) -> tuple[Path, Path]:
+    """
+    撮影し、A4印刷用画像を生成し、必要なら印刷する。
+
+    戻り値:
+        (元画像のパス, 印刷用画像のパス)
+    """
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    original_path = OUTPUT_DIR / f"{timestamp}-original.jpg"
+    print_path = OUTPUT_DIR / f"{timestamp}-print.png"
+
+    print("Starting capture...")
+
+    original = capture_frame()
+
+    original.save(
+        original_path,
+        quality=95,
+    )
+    print(f"Original saved: {original_path}")
+
+    prepared = prepare_for_print(
+        original,
+        rotate_clockwise=rotate_clockwise,
+    )
+
+    prepared.save(
+        print_path,
+        dpi=(203, 203),
+    )
+
+    print(f"Print image saved: {print_path}")
+    print(f"Print size: {prepared.width}x{prepared.height}")
+
+    if print_enabled:
+        send_to_printer(print_path)
+    else:
+        print("Print disabled: 画像保存だけ行いました。")
+
+    return original_path, print_path
 
 
 def parse_args() -> argparse.Namespace:
@@ -121,16 +170,15 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--print",
+        "--no-print",
         action="store_true",
-        dest="send_to_printer",
-        help="保存後にM08Fへ印刷する",
+        help="印刷せず画像保存だけ行う",
     )
 
     parser.add_argument(
         "--no-rotate",
         action="store_true",
-        help="撮影画像を90度回転しない",
+        help="画像を90度回転しない",
     )
 
     return parser.parse_args()
@@ -139,31 +187,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    original_path = OUTPUT_DIR / f"{timestamp}-original.jpg"
-    print_path = OUTPUT_DIR / f"{timestamp}-print.png"
-
     try:
-        original = capture_frame()
-        original.save(original_path, quality=95)
-        print(f"Original saved: {original_path}")
-
-        prepared = prepare_for_print(
-            original,
+        capture_and_print(
+            print_enabled=not args.no_print,
             rotate_clockwise=not args.no_rotate,
         )
-        prepared.save(print_path, dpi=(203, 203))
-        print(f"Print image saved: {print_path}")
-        print(f"Print size: {prepared.width}x{prepared.height}")
-
-        if args.send_to_printer:
-            print_image(print_path)
-        else:
-            print("Dry run: 印刷はしていません。")
-            print("印刷する場合: python capture_and_print.py --print")
-
         return 0
 
     except subprocess.CalledProcessError as exc:
