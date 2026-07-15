@@ -1,0 +1,19 @@
+[Unit]
+Description=Thermal Large Format Camera
+After=cups.service
+Requires=cups.service
+
+[Service]
+Type=simple
+User=tak
+Group=tak
+WorkingDirectory=/home/tak/thermal-large-format
+Environment="PATH=/home/tak/thermal-large-format/venv/bin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin"
+ExecStart=/home/tak/thermal-large-format/venv/bin/python -u /home/tak/thermal-large-format/button_monitor.py
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

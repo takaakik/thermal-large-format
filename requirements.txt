@@ -1,2 +1,1 @@
-numpy==2.5.1
-pillow==12.3.0
+Pillow>=10.0
