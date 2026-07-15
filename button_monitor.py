@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 from __future__ import annotations
 
 import sys
@@ -24,7 +23,7 @@ def show_ready_message() -> None:
 
 
 def wait_until_released() -> None:
-    """ボタンが離されるまで待つ。"""
+    """Wait until the shutter button is released."""
     while GPIO.input(BUTTON_PIN) == GPIO.LOW:
         time.sleep(0.01)
 
@@ -47,9 +46,7 @@ def main() -> int:
                 bouncetime=BOUNCE_TIME_MS,
             )
 
-            # 押しっぱなしによる再検出を防ぐ
             wait_until_released()
-
             print("Capture!")
 
             try:
