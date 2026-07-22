@@ -290,9 +290,7 @@ def capture_and_print(
 
     if print_enabled:
         job_id = send_to_printer(print_path)
-        
-        if wait_for_finish:
-            wait_until_print_finished(job_id)
+        # wait_until_print_finished(job_id)
     else:
         print("Print disabled: image files only.")
 
