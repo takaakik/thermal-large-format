@@ -17,13 +17,13 @@ CAMERA_DEVICE = "/dev/video0"
 CAPTURE_WIDTH = 3264
 CAPTURE_HEIGHT = 2448
 
-# M08F: A4 at 203 dpi
-PRINT_WIDTH = 1678
-PRINT_HEIGHT = 2373
+# PJ-763: A4 at 300 dpi
+PRINT_WIDTH = 2480
+PRINT_HEIGHT = 3508
 
 OUTPUT_DIR = Path("output")
-PRINTER_NAME = "M08F"
-PRINTER_URI_PART = "usb:///M08F"
+PRINTER_NAME = "PJ-763"
+PRINTER_URI_PART = "usb://Brother/PJ-763"
 PRINT_TIMEOUT_SECONDS = 300
 
 # Absolute paths are used because systemd may not include /usr/sbin in PATH.
@@ -48,7 +48,7 @@ def run_command(
 
 
 def get_pending_jobs() -> str:
-    """Return pending CUPS jobs for the M08F as text."""
+    """Return pending CUPS jobs for the configured printer as text."""
     result = run_command(
         [LPSTAT, "-W", "not-completed", "-o", PRINTER_NAME]
     )
@@ -56,16 +56,14 @@ def get_pending_jobs() -> str:
 
 
 def check_printer_ready() -> None:
-    """
-    Confirm that the M08F is connected, enabled, accepting jobs,
-    and has no unfinished jobs.
-    """
+    """Confirm that the PJ-763 is connected and ready."""
+
     devices = run_command([LPINFO, "-v"])
 
     if PRINTER_URI_PART not in devices.stdout:
         raise RuntimeError(
-            "M08F is not detected as a USB printer. "
-            "Check printer power, paper, and the USB cable."
+            "PJ-763 is not detected as a USB printer. "
+            "Check printer power and the USB cable."
         )
 
     status = run_command([LPSTAT, "-p", PRINTER_NAME])
@@ -78,28 +76,31 @@ def check_printer_ready() -> None:
 
     if "disabled" in status_text:
         raise RuntimeError(
-            "M08F is disabled in CUPS. Run: sudo cupsenable M08F"
+            "PJ-763 is disabled in CUPS. "
+            "Run: sudo cupsenable PJ-763"
         )
 
     accepting = run_command([LPSTAT, "-a", PRINTER_NAME])
-    accepting_text = f"{accepting.stdout}\n{accepting.stderr}".lower()
+    accepting_text = (
+        f"{accepting.stdout}\n{accepting.stderr}"
+    ).lower()
 
     if (
         accepting.returncode != 0
         or "accepting requests" not in accepting_text
     ):
         raise RuntimeError(
-            "M08F is not accepting print jobs. "
-            "Run: sudo cupsaccept M08F"
+            "PJ-763 is not accepting print jobs. "
+            "Run: sudo cupsaccept PJ-763"
         )
 
     pending = get_pending_jobs()
     if pending:
         raise RuntimeError(
-            "M08F already has unfinished print jobs. "
+            "PJ-763 already has unfinished print jobs. "
             "Clear them before shooting:\n"
             f"{pending}\n"
-            "Command: cancel -a M08F"
+            "Command: cancel -a PJ-763"
         )
 
 
@@ -145,7 +146,7 @@ def prepare_for_print(
     *,
     rotate_clockwise: bool = True,
 ) -> Image.Image:
-    """Convert a captured image to A4/203 dpi grayscale."""
+    """Convert a captured image to A4/300 dpi grayscale."""
     image = ImageOps.exif_transpose(image)
 
     if rotate_clockwise:
@@ -192,7 +193,7 @@ def send_to_printer(path: Path) -> str:
 
 
 def get_active_job_ids() -> set[str]:
-    """Return IDs of unfinished M08F jobs."""
+    """Return IDs of unfinished print jobs."""
     result = run_command(
         [LPSTAT, "-W", "not-completed", "-o", PRINTER_NAME]
     )
@@ -231,7 +232,7 @@ def wait_until_print_finished(
         if "disabled" in status_text:
             cancel_job(job_id)
             raise RuntimeError(
-                "M08F became disabled during printing. "
+                "PJ-763 became disabled during printing."
                 f"Job {job_id} was cancelled."
             )
 
@@ -283,7 +284,7 @@ def capture_and_print(
         original,
         rotate_clockwise=rotate_clockwise,
     )
-    prepared.save(print_path, dpi=(203, 203))
+    prepared.save(print_path, dpi=(300, 300))
 
     print(f"Print image saved: {print_path}")
     print(f"Print size: {prepared.width}x{prepared.height}")
@@ -301,7 +302,7 @@ def capture_and_print(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Capture an image and print it on the M08F."
+        description="Capture an image and print it on the PJ-763."
     )
     parser.add_argument(
         "--no-print",
