@@ -20,14 +20,23 @@ CAMERA_DEVICE = "/dev/video0"
 CAPTURE_WIDTH = 3264
 CAPTURE_HEIGHT = 2448
 
-# PJ-763: A4 at 300 dpi
-PRINT_WIDTH = 2480
-PRINT_HEIGHT = 3508
+# PJ-763 actual A4 raster size used by Brother driver
+PRINT_WIDTH = 2400
+PRINT_HEIGHT = 3300
 
 OUTPUT_DIR = Path("output")
 PRINTER_NAME = "PJ-763"
 PRINTER_URI_PART = "usb://Brother/PJ-763"
 PRINT_TIMEOUT_SECONDS = 300
+
+BROTHER_BASE = Path("/opt/brother/PTouch/pj763")
+BROTHER_RASTER = BROTHER_BASE / "lpd/rastertobrpt1"
+BROTHER_MEDIAINFO = BROTHER_BASE / "inf/brmediatype"
+BROTHER_PAPERINFO = BROTHER_BASE / "inf/paperinfpj1"
+
+PROJECT_DIR = Path(__file__).resolve().parent
+ATKINSON_LIB = PROJECT_DIR / "libatkinson.so"
+PJ763_RC = PROJECT_DIR / "brpj763rc-test"
 
 # Absolute paths are used because systemd may not include /usr/sbin in PATH.
 LPINFO = "/usr/sbin/lpinfo"
@@ -149,12 +158,15 @@ def prepare_for_print(
     *,
     rotate_clockwise: bool = True,
 ) -> Image.Image:
-    """Convert a captured image to A4/300 dpi 1-bit image for PJ-763."""
+    """Convert captured image to PJ-763 A4 1-bit Atkinson image."""
+
     image = ImageOps.exif_transpose(image)
 
     if rotate_clockwise:
         image = image.transpose(Image.Transpose.ROTATE_270)
 
+    # Resize BEFORE dithering.
+    # PJ-763 Brother driver uses 2400 x 3300 pixels for A4.
     image = ImageOps.fit(
         image,
         (PRINT_WIDTH, PRINT_HEIGHT),
@@ -165,6 +177,7 @@ def prepare_for_print(
     image = image.convert("L")
 
     gamma = 0.80
+
     lut = np.array(
         [
             int(255 * ((i / 255) ** gamma))
@@ -175,17 +188,22 @@ def prepare_for_print(
 
     t0 = time.perf_counter()
 
-    source = lut[np.asarray(image, dtype=np.uint8)].astype(
+    source = lut[
+        np.asarray(image, dtype=np.uint8)
+    ].astype(
         np.float32,
         copy=True,
     )
 
     height, width = source.shape
-    output = np.empty((height, width), dtype=np.uint8)
+    output = np.empty(
+        (height, width),
+        dtype=np.uint8,
+    )
 
     t1 = time.perf_counter()
 
-    lib = ctypes.CDLL("./libatkinson.so")
+    lib = ctypes.CDLL(str(ATKINSON_LIB))
 
     lib.atkinson_dither.argtypes = [
         ctypes.POINTER(ctypes.c_float),
@@ -198,8 +216,12 @@ def prepare_for_print(
     t2 = time.perf_counter()
 
     lib.atkinson_dither(
-        source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-        output.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+        source.ctypes.data_as(
+            ctypes.POINTER(ctypes.c_float)
+        ),
+        output.ctypes.data_as(
+            ctypes.POINTER(ctypes.c_uint8)
+        ),
         width,
         height,
     )
@@ -209,7 +231,10 @@ def prepare_for_print(
     result = Image.fromarray(
         output,
         mode="L",
-    ).convert("1")
+    ).convert(
+        "1",
+        dither=Image.Dither.NONE,
+    )
 
     t4 = time.perf_counter()
 
@@ -220,35 +245,109 @@ def prepare_for_print(
 
     return result
 
+def send_to_printer(
+    image: Image.Image,
+) -> str:
+    """
+    Convert the already-dithered image directly to Brother PJ-763
+    raster data and submit it to CUPS as raw data.
+    """
 
-def send_to_printer(path: Path) -> str:
-    """Submit one image to CUPS and return its job ID."""
-    command = [
-        LP,
-        "-d",
-        PRINTER_NAME,
-        "-o",
-        "media=A4",
-        "-o",
-        "fit-to-page",
-        str(path),
-    ]
-
-    print("Print command:", " ".join(command))
-
-    result = run_command(command, check=True)
-    message = result.stdout.strip()
-
-    if message:
-        print(message)
-
-    match = re.search(r"request id is (\S+)", message)
-    if not match:
-        raise RuntimeError(
-            f"Could not read the CUPS job ID from: {message}"
+    if image.size != (PRINT_WIDTH, PRINT_HEIGHT):
+        raise ValueError(
+            f"Unexpected print image size: {image.size}, "
+            f"expected {(PRINT_WIDTH, PRINT_HEIGHT)}"
         )
 
-    return match.group(1)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    ppm_path = Path("/tmp") / f"pj763-{timestamp}.ppm"
+    raw_path = Path("/tmp") / f"pj763-{timestamp}.bin"
+
+    try:
+        # Atkinson is already finished.
+        # Do not resize here.
+        image.convert("RGB").save(
+            ppm_path,
+            format="PPM",
+        )
+
+        raster_start = time.perf_counter()
+
+        command = [
+            str(BROTHER_RASTER),
+            "-P",
+            "pj763",
+            "-md",
+            str(BROTHER_MEDIAINFO),
+            "-pi",
+            str(BROTHER_PAPERINFO),
+            "-rc",
+            str(PJ763_RC),
+            "-out",
+            "cat",
+        ]
+
+        with ppm_path.open("rb") as ppm_file, \
+                raw_path.open("wb") as raw_file:
+
+            result = subprocess.run(
+                command,
+                stdin=ppm_file,
+                stdout=raw_file,
+                stderr=subprocess.PIPE,
+            )
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                "rastertobrpt1 failed:\n"
+                + result.stderr.decode(errors="replace")
+            )
+
+        raw_size = raw_path.stat().st_size
+
+        if raw_size == 0:
+            raise RuntimeError(
+                "rastertobrpt1 produced an empty file"
+            )
+
+        print(
+            f"Brother raster ready: "
+            f"{raw_size} bytes in "
+            f"{time.perf_counter() - raster_start:.3f}s",
+            flush=True,
+        )
+
+        lp_command = [
+            LP,
+            "-d",
+            PRINTER_NAME,
+            "-o",
+            "raw",
+            str(raw_path),
+        ]
+
+        print(
+            "Print command:",
+            " ".join(lp_command),
+            flush=True,
+        )
+
+        lp_result = subprocess.run(
+            lp_command,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        response = lp_result.stdout.strip()
+        print(response, flush=True)
+
+        return response
+
+    finally:
+        ppm_path.unlink(missing_ok=True)
+        raw_path.unlink(missing_ok=True)
 
 
 def get_active_job_ids() -> set[str]:
@@ -349,7 +448,7 @@ def capture_and_print(
     print(f"Print size: {prepared.width}x{prepared.height}")
 
     if print_enabled:
-        job_id = send_to_printer(print_path)
+        job_id = send_to_printer(prepared)
         
         if wait_for_finish:
             wait_until_print_finished(job_id)
