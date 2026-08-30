@@ -146,7 +146,7 @@ def prepare_for_print(
     *,
     rotate_clockwise: bool = True,
 ) -> Image.Image:
-    """Convert a captured image to A4/300 dpi grayscale."""
+    """Convert a captured image to A4/300 dpi 1-bit image for PJ-763."""
     image = ImageOps.exif_transpose(image)
 
     if rotate_clockwise:
@@ -159,7 +159,55 @@ def prepare_for_print(
         centering=(0.5, 0.5),
     )
 
-    return image.convert("L")
+    # Convert to 8-bit grayscale.
+    image = image.convert("L")
+
+    # Lift shadows slightly before halftoning.
+    gamma = 0.80
+    lut = [
+        int(255 * ((i / 255) ** gamma))
+        for i in range(256)
+    ]
+    image = image.point(lut)
+
+    # Atkinson dithering.
+    width, height = image.size
+
+    source = [
+        list(image.crop((0, y, width, y + 1)).getdata())
+        for y in range(height)
+    ]
+
+    output = Image.new("1", image.size, 1)
+    pixels = output.load()
+
+    for y in range(height):
+        for x in range(width):
+            old_value = source[y][x]
+            new_value = 255 if old_value >= 128 else 0
+
+            pixels[x, y] = new_value
+
+            error = (old_value - new_value) / 8.0
+
+            for dx, dy in (
+                (1, 0),
+                (2, 0),
+                (-1, 1),
+                (0, 1),
+                (1, 1),
+                (0, 2),
+            ):
+                nx = x + dx
+                ny = y + dy
+
+                if 0 <= nx < width and 0 <= ny < height:
+                    source[ny][nx] = max(
+                        0,
+                        min(255, source[ny][nx] + error),
+                    )
+
+    return output
 
 
 def send_to_printer(path: Path) -> str:
