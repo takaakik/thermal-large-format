@@ -25,3 +25,4 @@ dist/
 *.png
 *.jpg
 output/
+libatkinson.so
