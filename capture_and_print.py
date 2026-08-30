@@ -36,7 +36,7 @@ BROTHER_PAPERINFO = BROTHER_BASE / "inf/paperinfpj1"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 ATKINSON_LIB = PROJECT_DIR / "libatkinson.so"
-PJ763_RC = PROJECT_DIR / "brpj763rc-test"
+PJ763_RC = PROJECT_DIR / "pj763rc"
 
 # Absolute paths are used because systemd may not include /usr/sbin in PATH.
 LPINFO = "/usr/sbin/lpinfo"
