@@ -12,6 +12,9 @@ from pathlib import Path
 import cv2
 from PIL import Image, ImageOps
 
+import ctypes
+import numpy as np
+import time
 
 CAMERA_DEVICE = "/dev/video0"
 CAPTURE_WIDTH = 3264
@@ -159,55 +162,63 @@ def prepare_for_print(
         centering=(0.5, 0.5),
     )
 
-    # Convert to 8-bit grayscale.
     image = image.convert("L")
 
-    # Lift shadows slightly before halftoning.
     gamma = 0.80
-    lut = [
-        int(255 * ((i / 255) ** gamma))
-        for i in range(256)
+    lut = np.array(
+        [
+            int(255 * ((i / 255) ** gamma))
+            for i in range(256)
+        ],
+        dtype=np.uint8,
+    )
+
+    t0 = time.perf_counter()
+
+    source = lut[np.asarray(image, dtype=np.uint8)].astype(
+        np.float32,
+        copy=True,
+    )
+
+    height, width = source.shape
+    output = np.empty((height, width), dtype=np.uint8)
+
+    t1 = time.perf_counter()
+
+    lib = ctypes.CDLL("./libatkinson.so")
+
+    lib.atkinson_dither.argtypes = [
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_int,
+        ctypes.c_int,
     ]
-    image = image.point(lut)
+    lib.atkinson_dither.restype = None
 
-    # Atkinson dithering.
-    width, height = image.size
+    t2 = time.perf_counter()
 
-    source = [
-        list(image.crop((0, y, width, y + 1)).getdata())
-        for y in range(height)
-    ]
+    lib.atkinson_dither(
+        source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        output.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+        width,
+        height,
+    )
 
-    output = Image.new("1", image.size, 1)
-    pixels = output.load()
+    t3 = time.perf_counter()
 
-    for y in range(height):
-        for x in range(width):
-            old_value = source[y][x]
-            new_value = 255 if old_value >= 128 else 0
+    result = Image.fromarray(
+        output,
+        mode="L",
+    ).convert("1")
 
-            pixels[x, y] = new_value
+    t4 = time.perf_counter()
 
-            error = (old_value - new_value) / 8.0
+    print(f"array setup:  {t1 - t0:.3f}s", flush=True)
+    print(f"library load: {t2 - t1:.3f}s", flush=True)
+    print(f"atkinson C:   {t3 - t2:.3f}s", flush=True)
+    print(f"PIL output:   {t4 - t3:.3f}s", flush=True)
 
-            for dx, dy in (
-                (1, 0),
-                (2, 0),
-                (-1, 1),
-                (0, 1),
-                (1, 1),
-                (0, 2),
-            ):
-                nx = x + dx
-                ny = y + dy
-
-                if 0 <= nx < width and 0 <= ny < height:
-                    source[ny][nx] = max(
-                        0,
-                        min(255, source[ny][nx] + error),
-                    )
-
-    return output
+    return result
 
 
 def send_to_printer(path: Path) -> str:
