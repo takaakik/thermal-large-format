@@ -1,10 +1,16 @@
 # thermal-large-format
 
+![thermal-large-format](images/thermal-large-format.png)
+
 A Raspberry Pi based A4 thermal paper camera.
 
 `thermal-large-format` is a standalone digital camera that captures a live
 USB camera image and immediately prints it as a monochrome A4 thermal
 photograph.
+
+![A4 thermal photograph printed on the spot](images/thermal-photo-in-use.jpg)
+
+*An A4 thermal photograph, printed on the spot.*
 
 The current version uses a Raspberry Pi 4 and a Brother PocketJet PJ-763.
 Images are converted to 1-bit using Atkinson dithering and sent directly
