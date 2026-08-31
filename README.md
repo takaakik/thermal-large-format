@@ -1,133 +1,276 @@
-# thermal-large-format v1.0
+# thermal-large-format
 
-Raspberry Pi 4 + USB camera + Phomemo M08F A4 thermal printer.
+A Raspberry Pi based A4 thermal paper camera.
+
+`thermal-large-format` is a standalone digital camera that captures a live
+USB camera image and immediately prints it as a monochrome A4 thermal
+photograph.
+
+The current version uses a Raspberry Pi 4 and a Brother PocketJet PJ-763.
+Images are converted to 1-bit using Atkinson dithering and sent directly
+through Brother's raster converter, avoiding the slower conventional
+PostScript/Ghostscript print path.
+
+## Features
+
+- Fullscreen live view
+- Physical shutter button
+- A4 direct thermal printing
+- 300 dpi, 2400 x 3300 pixel print pipeline
+- Atkinson dithering implemented in C
+- Direct Brother raster output for faster printing
+- Approximately 5 seconds from shutter press to print start
+- Original and processed images saved locally
+- Long-press self-test print
+- Designed for standalone battery-powered use
 
 ## Hardware
+
+Current hardware:
 
 - Raspberry Pi 4 Model B, 4 GB
 - Raspberry Pi OS 64-bit
 - UVC USB camera (`/dev/video0`)
-- Phomemo M08F
+- Brother PocketJet PJ-763
+- 7-inch 1024 x 600 HDMI display
 - Momentary shutter button
   - GPIO 17 / physical pin 11
   - GND / physical pin 9
-- Suitable Raspberry Pi power supply or battery
+- USB power bank for Raspberry Pi / display / camera
+- Brother battery for the PJ-763
+
+## Controls
+
+The physical shutter button has two functions:
+
+- **Short press:** capture the current live-view frame and print it
+- **Long press (3 seconds):** print a self-test sheet
+
+The self-test reports:
+
+- Camera status
+- Printer status
+- Wi-Fi SSID
+- IPv4 address
+- mDNS hostname
+- CPU temperature
+- Free disk space
+- System uptime
+- SSH connection addresses
+- Date and time
+
+This is useful when operating the camera without a keyboard or when the
+Raspberry Pi's current network address is unknown.
+
+## Image pipeline
+
+The photographic print pipeline is:
+
+    USB camera
+        |
+        v
+    live OpenCV frame
+        |
+        v
+    PIL image
+        |
+        v
+    EXIF transpose / rotation
+        |
+        v
+    ImageOps.fit(2400 x 3300, LANCZOS)
+        |
+        v
+    grayscale
+        |
+        v
+    gamma correction
+        |
+        v
+    Atkinson dithering (C)
+        |
+        v
+    1-bit image
+        |
+        v
+    PPM
+        |
+        v
+    Brother rastertobrpt1
+        |
+        v
+    CUPS raw queue
+        |
+        v
+    PJ-763
+
+Resizing is performed **before** dithering. Resampling an already dithered
+1-bit image can create moire and other unwanted patterns.
 
 ## System packages
 
-```bash
-sudo apt update
-sudo apt install \
-  cups \
-  v4l-utils \
-  python3-opencv \
-  python3-rpi.gpio \
-  python3-venv
-```
-
-Install the official M08F Linux driver and confirm:
-
-```bash
-lpinfo -m | grep M08F
-lpstat -p M08F
-```
-
-The queue should use `/etc/cups/ppd/M08F.ppd`.
+    sudo apt update
+    sudo apt install \
+      cups \
+      v4l-utils \
+      python3-opencv \
+      python3-rpi.gpio \
+      python3-venv \
+      gcc
 
 ## Python environment
 
-This project expects the virtual environment to see the system OpenCV and
-RPi.GPIO packages:
+The virtual environment uses the system OpenCV and RPi.GPIO packages:
 
-```bash
-cd ~/thermal-large-format
-python3 -m venv --system-site-packages venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
+    cd ~/thermal-large-format
+    python3 -m venv --system-site-packages venv
+    source venv/bin/activate
+    pip install -r requirements.txt
 
-## Before first test
+## Brother PJ-763 driver
 
-Clear old jobs and enable the printer:
+This project requires Brother's Linux/Raspbian driver for the PJ-763.
 
-```bash
-cancel -a M08F
-sudo cupsenable M08F
-sudo cupsaccept M08F
-```
+The Brother driver is proprietary software and is **not included in this
+repository**. Download and install the appropriate driver separately from
+Brother.
 
-Confirm that the M08F is visible:
+The current system uses Brother PJ-763 printer driver version 2.0.4.
 
-```bash
-/usr/sbin/lpinfo -v | grep M08F
-lpstat -t
-```
+The driver provides:
 
-## Manual tests
+    /opt/brother/PTouch/pj763/lpd/rastertobrpt1
+    /opt/brother/PTouch/pj763/inf/brmediatype
+    /opt/brother/PTouch/pj763/inf/paperinfpj1
 
-Capture without printing:
+`thermal-large-format` calls `rastertobrpt1` directly and submits the
+resulting Brother raster data to CUPS using a raw queue.
 
-```bash
-source venv/bin/activate
-python capture_and_print.py --no-print
-```
+Confirm that the printer is visible:
 
-Capture and print:
+    lsusb | grep Brother
+    /usr/sbin/lpinfo -v | grep Brother
+    lpstat -p PJ-763
 
-```bash
-python capture_and_print.py
-```
+Expected USB device:
 
-Run the shutter-button monitor manually:
+    04f9:2078 Brother Industries, Ltd PJ-763
 
-```bash
-python button_monitor.py
-```
+## Build the Atkinson dithering library
 
-Do not run the manual monitor while the systemd service is active, because
-both processes cannot claim GPIO 17 at the same time.
+The Atkinson algorithm is implemented in `atkinson.c`.
 
-## Install the systemd service
+Build it on the Raspberry Pi:
 
-```bash
-sudo cp thermal-camera.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now thermal-camera
-```
+    gcc -O3 -shared -fPIC atkinson.c -o libatkinson.so
 
-Check status and logs:
+`libatkinson.so` is a generated binary and should not be committed to the
+repository.
 
-```bash
-systemctl status thermal-camera
-journalctl -u thermal-camera -f
-```
+## Printer configuration
 
-After editing Python code:
+The direct raster pipeline uses the PJ-763 configuration file included with
+this project.
 
-```bash
-python -m py_compile capture_and_print.py button_monitor.py
-sudo systemctl restart thermal-camera
-```
+Important settings include:
 
-## Recovery
+    Halftone=BINARY
+    Density=3
+    Resolution=300
+    MediaSize=A4
 
-If CUPS disables the printer after a USB or paper error:
+Halftoning is performed by the project itself, so the Brother raster stage
+receives an already prepared 1-bit image.
 
-```bash
-sudo systemctl stop thermal-camera
-cancel -a M08F
-sudo cupsenable M08F
-sudo cupsaccept M08F
-sudo systemctl start thermal-camera
-```
+## Run manually
 
-The v1.0 program refuses to capture a new image when unfinished jobs already
-exist. It also waits for the current job to complete before returning to the
-ready state.
+Activate the virtual environment:
 
-## Output
+    cd ~/thermal-large-format
+    source venv/bin/activate
 
-Images are stored in `output/`:
+Run the camera:
 
-- `*-original.jpg`: full-resolution camera image
-- `*-print.png`: A4, 1678 x 2373 px, grayscale, 203 dpi
+    python thermal_camera.py
+
+Do not run a second copy while the systemd service is active, because both
+processes would attempt to use the same camera and GPIO shutter button.
+
+## systemd service
+
+Install the service:
+
+    sudo cp thermal-camera.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now thermal-camera.service
+
+Check status:
+
+    systemctl status thermal-camera.service
+
+Follow logs:
+
+    journalctl -u thermal-camera.service -f
+
+After editing the Python code:
+
+    python3 -m py_compile thermal_camera.py capture_and_print.py
+    sudo systemctl restart thermal-camera.service
+
+## Output files
+
+Captured images are stored in `output/`.
+
+Typical files:
+
+    YYYYMMDD-HHMMSS-original.jpg
+    YYYYMMDD-HHMMSS-print.png
+
+`original.jpg` contains the captured camera image.
+
+`print.png` contains the final 2400 x 3300 pixel monochrome image prepared
+for the PJ-763.
+
+## Project structure
+
+    thermal_camera.py
+        Live view, GPIO shutter handling, and self-test
+
+    capture_and_print.py
+        Image processing and PJ-763 print pipeline
+
+    atkinson.c
+        Atkinson dithering implementation
+
+    brpj763rc-test
+        PJ-763 raster configuration
+
+    thermal-camera.service
+        systemd service definition
+
+    requirements.txt
+        Python dependencies
+
+    output/
+        Captured and processed images
+
+## Notes
+
+The project originally used a Phomemo M08F A4 thermal printer. The current
+PJ-763 version uses a different print architecture and the old M08F setup is
+no longer required.
+
+The Brother CUPS wrapper includes components that are not native ARM64
+executables. This project therefore uses the ARM-compatible
+`rastertobrpt1` component directly rather than relying on the complete
+Brother CUPS conversion chain.
+
+The PJ-763 itself remains controlled through CUPS as a raw printer queue.
+
+## License
+
+The original source code in this repository is released under the MIT
+License. See `LICENSE`.
+
+Brother printer drivers, utilities, and other Brother software are not part
+of this project and remain subject to Brother's own licensing terms.
