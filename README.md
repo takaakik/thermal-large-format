@@ -242,7 +242,7 @@ for the PJ-763.
     atkinson.c
         Atkinson dithering implementation
 
-    brpj763rc-test
+    pj763rc
         PJ-763 raster configuration
 
     thermal-camera.service
